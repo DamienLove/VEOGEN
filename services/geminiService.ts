@@ -77,11 +77,22 @@ export const generateSpeech = async (
   console.log(`Generating speech for ${speaker}: "${text}"`);
   const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
 
-  // Map App Speakers to Gemini Voices
-  let voiceName = 'Puck'; // Default
-  if (speaker === Speaker.ELENA) voiceName = 'Kore';
-  if (speaker === Speaker.ARUN) voiceName = 'Fenrir';
-  if (speaker === Speaker.NARRATOR) voiceName = 'Charon'; // Deep Male Voice
+  // Strict Voice Mapping for Consistency (Voice Cloning Simulation)
+  let voiceName = 'Puck'; // Default fallback
+  
+  switch (speaker) {
+    case Speaker.ELENA:
+      voiceName = 'Kore'; // Fixed female voice for Elena
+      break;
+    case Speaker.ARUN:
+      voiceName = 'Fenrir'; // Fixed male voice for Arun
+      break;
+    case Speaker.NARRATOR:
+      voiceName = 'Charon'; // Fixed deep male voice for Narrator
+      break;
+    default:
+      voiceName = 'Puck';
+  }
 
   try {
     const response = await ai.models.generateContent({
@@ -172,7 +183,10 @@ export const generateVideo = async (
     const referenceImagesPayload: VideoGenerationReferenceImage[] = [];
 
     if (params.referenceImages) {
-      for (const img of params.referenceImages) {
+      // Limit to 3 reference images max to strictly follow API limits
+      const limitedRefs = params.referenceImages.slice(0, 3);
+      
+      for (const img of limitedRefs) {
         console.log(`Adding reference image: ${img.file.name}`);
         referenceImagesPayload.push({
           image: {

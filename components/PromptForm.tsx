@@ -66,41 +66,56 @@ const fileToImageFile = (file: File): Promise<ImageFile> =>
 const fileToVideoFile = (file: File): Promise<VideoFile> =>
   fileToBase64<VideoFile>(file);
 
-const extractFrameFromVideo = (videoFile: File): Promise<ImageFile> => {
+// Extracts 3 frames (20%, 50%, 90%) to capture movement and angles
+const extractSmartFramesFromVideo = (videoFile: File): Promise<ImageFile[]> => {
   return new Promise((resolve, reject) => {
     const video = document.createElement('video');
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
+    const frames: ImageFile[] = [];
     
     video.autoplay = true;
     video.muted = true;
     video.src = URL.createObjectURL(videoFile);
     
+    // Points in time to capture: 20%, 50%, 90%
+    const capturePoints = [0.2, 0.5, 0.9];
+    let currentPointIndex = 0;
+
+    const captureFrame = async () => {
+      if (!ctx) return;
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      
+      const base64Url = canvas.toDataURL('image/jpeg');
+      const base64 = base64Url.split(',')[1];
+      
+      const res = await fetch(base64Url);
+      const blob = await res.blob();
+      const imageFile = new File([blob], `frame_${currentPointIndex}.jpg`, { type: "image/jpeg" });
+      
+      frames.push({ file: imageFile, base64 });
+      
+      currentPointIndex++;
+      if (currentPointIndex < capturePoints.length) {
+         video.currentTime = video.duration * capturePoints[currentPointIndex];
+      } else {
+         URL.revokeObjectURL(video.src);
+         resolve(frames);
+      }
+    };
+
     video.onloadeddata = () => {
-       // Seek to the end (minus a small buffer to avoid black frames)
-       if (video.duration > 0.5) {
-         video.currentTime = video.duration - 0.1; 
+       if (video.duration > 0) {
+         video.currentTime = video.duration * capturePoints[0];
        } else {
          video.currentTime = 0;
        }
     };
 
     video.onseeked = () => {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      ctx?.drawImage(video, 0, 0, canvas.width, canvas.height);
-      
-      const base64Url = canvas.toDataURL('image/jpeg');
-      const base64 = base64Url.split(',')[1];
-      
-      // Convert base64 back to a File object for consistency
-      fetch(base64Url)
-      .then(res => res.blob())
-      .then(blob => {
-        const imageFile = new File([blob], "extracted_frame.jpg", { type: "image/jpeg" });
-        resolve({ file: imageFile, base64 });
-        URL.revokeObjectURL(video.src);
-      });
+      captureFrame();
     };
     
     video.onerror = (e) => {
@@ -146,14 +161,15 @@ const CustomSelect: React.FC<{
 );
 
 const ImageUpload: React.FC<{
-  onSelect: (image: ImageFile) => void;
+  onSelect: (image: ImageFile | ImageFile[]) => void;
   onRemove?: () => void;
   image?: ImageFile | null;
   label: React.ReactNode;
   className?: string;
   compact?: boolean;
   acceptVideo?: boolean;
-}> = ({onSelect, onRemove, image, label, className = "w-28 h-20", compact = false, acceptVideo = false}) => {
+  isReferenceMode?: boolean;
+}> = ({onSelect, onRemove, image, label, className = "w-28 h-20", compact = false, acceptVideo = false, isReferenceMode = false}) => {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isExtracting, setIsExtracting] = useState(false);
 
@@ -163,8 +179,15 @@ const ImageUpload: React.FC<{
       try {
         if (file.type.startsWith('video/')) {
           setIsExtracting(true);
-          const extractedImage = await extractFrameFromVideo(file);
-          onSelect(extractedImage);
+          const extractedFrames = await extractSmartFramesFromVideo(file);
+          // If reference mode, return all frames. Otherwise just the last one (for start frame etc)
+          if (isReferenceMode) {
+            onSelect(extractedFrames);
+          } else {
+             // For start frame mode, we usually want the last frame or first frame.
+             // Let's default to the last frame (index 2 in our extractor)
+             onSelect(extractedFrames[extractedFrames.length - 1]);
+          }
           setIsExtracting(false);
         } else {
           const imageFile = await fileToImageFile(file);
@@ -208,7 +231,7 @@ const ImageUpload: React.FC<{
       {isExtracting ? (
         <div className="flex flex-col items-center">
           <div className="w-4 h-4 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin mb-1"></div>
-          <span className="text-[9px]">Extracting...</span>
+          <span className="text-[9px]">Scanning Video...</span>
         </div>
       ) : (
         <>
@@ -381,10 +404,10 @@ const PromptForm: React.FC<PromptFormProps> = ({
   }, [prompt]);
 
   useEffect(() => {
-    const textarea = dialogueRef.current;
-    if (textarea) {
-      textarea.style.height = 'auto';
-      textarea.style.height = `${textarea.scrollHeight}px`;
+    const dialogueArea = dialogueRef.current;
+    if (dialogueArea) {
+      dialogueArea.style.height = 'auto';
+      dialogueArea.style.height = `${dialogueArea.scrollHeight}px`;
     }
   }, [dialogue]);
 
@@ -469,8 +492,6 @@ const PromptForm: React.FC<PromptFormProps> = ({
     GenerationMode.REFERENCES_TO_VIDEO,
   ];
 
-  const totalReferences = referenceImages.length + (styleImage ? 1 : 0);
-
   const renderMediaUploads = () => {
     if (generationMode === GenerationMode.FRAMES_TO_VIDEO) {
       return (
@@ -479,7 +500,7 @@ const PromptForm: React.FC<PromptFormProps> = ({
             <ImageUpload
               label="Start Frame"
               image={startFrame}
-              onSelect={setStartFrame}
+              onSelect={(img) => setStartFrame(img as ImageFile)}
               onRemove={() => {
                 setStartFrame(null);
                 setIsLooping(false);
@@ -490,7 +511,7 @@ const PromptForm: React.FC<PromptFormProps> = ({
               <ImageUpload
                 label="End Frame"
                 image={endFrame}
-                onSelect={setEndFrame}
+                onSelect={(img) => setEndFrame(img as ImageFile)}
                 onRemove={() => setEndFrame(null)}
               />
             )}
@@ -540,17 +561,25 @@ const PromptForm: React.FC<PromptFormProps> = ({
                     ) : (
                       <ImageUpload
                         label={i === 0 ? "Video / Ref 1" : `Ref ${i + 1}`}
-                        onSelect={(img) => setReferenceImages((imgs) => [...imgs, img])}
+                        onSelect={(imgs) => {
+                          if (Array.isArray(imgs)) {
+                            // If video extracted multiple frames, set them all
+                            setReferenceImages(imgs.slice(0, 3));
+                          } else {
+                             setReferenceImages((prev) => [...prev, imgs]);
+                          }
+                        }}
                         className="w-24 h-24"
                         compact={false}
-                        acceptVideo={true} // Allow video upload here to extract frame
+                        acceptVideo={true} // Allow video upload here to extract MULTIPLE frames
+                        isReferenceMode={true}
                       />
                     )}
                  </div>
               ))}
             </div>
             <p className="text-[10px] text-gray-500 text-center">
-              Upload images or <strong>videos</strong> (auto-extracts last frame) to maintain character consistency.
+              Upload a <strong>video</strong> to auto-extract 3 key frames for maximum character & movement consistency.
             </p>
         </div>
       );
@@ -777,9 +806,9 @@ const PromptForm: React.FC<PromptFormProps> = ({
                               className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm text-gray-200 focus:ring-1 focus:ring-indigo-500 outline-none"
                             >
                               <option value={Speaker.NONE}>Select Speaker...</option>
-                              <option value={Speaker.ELENA}>Elena (Scientist)</option>
-                              <option value={Speaker.ARUN}>Arun (Scientist)</option>
-                              <option value={Speaker.NARRATOR}>Narrator</option>
+                              <option value={Speaker.ELENA}>Elena (Kore - Female)</option>
+                              <option value={Speaker.ARUN}>Arun (Fenrir - Male)</option>
+                              <option value={Speaker.NARRATOR}>Narrator (Deep Male)</option>
                            </select>
                         </div>
                         <textarea
