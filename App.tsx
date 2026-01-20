@@ -28,7 +28,8 @@ const App: React.FC = () => {
   
   // Timeline State
   const [timeline, setTimeline] = useState<StorySegment[]>([]);
-  const [currentSegmentId, setCurrentSegmentId] = useState<string | null>(null);
+  // Draft State (The video currently being reviewed, not yet in timeline)
+  const [draftSegment, setDraftSegment] = useState<StorySegment | null>(null);
 
   const [lastConfig, setLastConfig] = useState<GenerateVideoParams | null>(
     null,
@@ -85,6 +86,7 @@ const App: React.FC = () => {
     setErrorMessage(null);
     setLastConfig(params);
     setInitialFormValues(null);
+    setDraftSegment(null); // Clear previous draft
 
     try {
       // Parallel execution if dialogue exists
@@ -105,9 +107,7 @@ const App: React.FC = () => {
         speaker: params.speaker
       };
 
-      setTimeline(prev => [...prev, newSegment]);
-      setCurrentSegmentId(newSegment.id);
-
+      setDraftSegment(newSegment);
       setLastVideoBlob(blob);
       setLastVideoObject(video);
       setAppState(AppState.SUCCESS);
@@ -151,6 +151,21 @@ const App: React.FC = () => {
     }
   }, [lastConfig, handleGenerate]);
 
+  const handleKeepScene = useCallback(() => {
+    if (draftSegment) {
+      setTimeline(prev => [...prev, draftSegment]);
+      setDraftSegment(null);
+    }
+  }, [draftSegment]);
+
+  const handleDiscardScene = useCallback(() => {
+    setDraftSegment(null);
+    // If timeline is empty, go back to IDLE. If not, stay in SUCCESS to show timeline.
+    if (timeline.length === 0) {
+      setAppState(AppState.IDLE);
+    }
+  }, [timeline.length]);
+
   const handleApiKeyDialogContinue = async () => {
     setShowApiKeyDialog(false);
     if (window.aistudio) {
@@ -170,16 +185,20 @@ const App: React.FC = () => {
     setInitialFormValues(null);
     // Clear Timeline
     setTimeline([]);
-    setCurrentSegmentId(null);
+    setDraftSegment(null);
   }, []);
 
   const handleAddScene = useCallback(() => {
     if (lastConfig) {
-      // Preserve settings (reference images, model, aspect ratio) but clear content (prompt, dialogue)
+      // Preserve settings (reference images, model, aspect ratio, AND speaker) 
+      // but clear content (prompt, dialogue)
       const nextParams: GenerateVideoParams = {
         ...lastConfig,
         prompt: '',
         dialogue: '',
+        // Keep the speaker selected to maintain voice consistency
+        speaker: lastConfig.speaker,
+        
         // If mode was EXTEND, revert to T2V for the next scene unless the user explicitly wants to start with something else.
         // However, if they were using References, we keep Reference mode to maintain character consistency.
         mode: lastConfig.mode === GenerationMode.EXTEND_VIDEO ? GenerationMode.TEXT_TO_VIDEO : lastConfig.mode,
@@ -261,7 +280,10 @@ const App: React.FC = () => {
 
   const canExtend = lastConfig?.resolution === Resolution.P720;
   
-  const currentSegment = timeline.find(s => s.id === currentSegmentId);
+  // Display Logic:
+  // If we have a draft, we are reviewing it.
+  // If no draft, we display the last segment of the timeline (if any).
+  const currentDisplaySegment = draftSegment || (timeline.length > 0 ? timeline[timeline.length - 1] : null);
 
   return (
     <div className="h-screen bg-black text-gray-200 flex flex-col font-sans overflow-hidden">
@@ -281,7 +303,7 @@ const App: React.FC = () => {
                  {timeline.length > 0 ? (
                    <div className="mb-8">
                      <h2 className="text-2xl text-gray-300 mb-2">Continue your story</h2>
-                     <p className="text-gray-500">{timeline.length} scene{timeline.length !== 1 ? 's' : ''} created so far.</p>
+                     <p className="text-gray-500">{timeline.length} scene{timeline.length !== 1 ? 's' : ''} saved so far.</p>
                    </div>
                  ) : (
                     <>
@@ -320,20 +342,23 @@ const App: React.FC = () => {
         ) : (
           <div className="flex-grow flex items-center justify-center">
             {appState === AppState.LOADING && <LoadingIndicator />}
-            {appState === AppState.SUCCESS && currentSegment && (
+            {appState === AppState.SUCCESS && currentDisplaySegment && (
               <VideoResult
-                currentSegment={currentSegment}
+                currentSegment={currentDisplaySegment}
                 timeline={timeline}
+                draftSegment={draftSegment}
                 onRetry={handleRetry}
                 onNewVideo={handleNewVideo}
                 onAddScene={handleAddScene}
                 onExtend={handleExtend}
+                onKeepScene={handleKeepScene}
+                onDiscardScene={handleDiscardScene}
                 canExtend={canExtend}
                 aspectRatio={lastConfig?.aspectRatio || AspectRatio.LANDSCAPE}
               />
             )}
             {appState === AppState.SUCCESS &&
-              !currentSegment &&
+              !currentDisplaySegment &&
               renderError(
                 'Video generated, but data is missing. Please try again.',
               )}

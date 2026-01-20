@@ -66,6 +66,50 @@ const fileToImageFile = (file: File): Promise<ImageFile> =>
 const fileToVideoFile = (file: File): Promise<VideoFile> =>
   fileToBase64<VideoFile>(file);
 
+const extractFrameFromVideo = (videoFile: File): Promise<ImageFile> => {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement('video');
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    video.autoplay = true;
+    video.muted = true;
+    video.src = URL.createObjectURL(videoFile);
+    
+    video.onloadeddata = () => {
+       // Seek to the end (minus a small buffer to avoid black frames)
+       if (video.duration > 0.5) {
+         video.currentTime = video.duration - 0.1; 
+       } else {
+         video.currentTime = 0;
+       }
+    };
+
+    video.onseeked = () => {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      ctx?.drawImage(video, 0, 0, canvas.width, canvas.height);
+      
+      const base64Url = canvas.toDataURL('image/jpeg');
+      const base64 = base64Url.split(',')[1];
+      
+      // Convert base64 back to a File object for consistency
+      fetch(base64Url)
+      .then(res => res.blob())
+      .then(blob => {
+        const imageFile = new File([blob], "extracted_frame.jpg", { type: "image/jpeg" });
+        resolve({ file: imageFile, base64 });
+        URL.revokeObjectURL(video.src);
+      });
+    };
+    
+    video.onerror = (e) => {
+      reject(new Error("Failed to load video for frame extraction"));
+    }
+  });
+};
+
+
 const CustomSelect: React.FC<{
   label: string;
   value: string;
@@ -108,16 +152,27 @@ const ImageUpload: React.FC<{
   label: React.ReactNode;
   className?: string;
   compact?: boolean;
-}> = ({onSelect, onRemove, image, label, className = "w-28 h-20", compact = false}) => {
+  acceptVideo?: boolean;
+}> = ({onSelect, onRemove, image, label, className = "w-28 h-20", compact = false, acceptVideo = false}) => {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [isExtracting, setIsExtracting] = useState(false);
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       try {
-        const imageFile = await fileToImageFile(file);
-        onSelect(imageFile);
+        if (file.type.startsWith('video/')) {
+          setIsExtracting(true);
+          const extractedImage = await extractFrameFromVideo(file);
+          onSelect(extractedImage);
+          setIsExtracting(false);
+        } else {
+          const imageFile = await fileToImageFile(file);
+          onSelect(imageFile);
+        }
       } catch (error) {
         console.error('Error converting file:', error);
+        setIsExtracting(false);
       }
     }
     if (inputRef.current) {
@@ -148,14 +203,24 @@ const ImageUpload: React.FC<{
     <button
       type="button"
       onClick={() => inputRef.current?.click()}
-      className={`${className} bg-gray-800 hover:bg-gray-700 border border-dashed border-gray-600 rounded-lg flex flex-col items-center justify-center text-gray-400 hover:text-white transition-colors group`}>
-      <PlusIcon className="w-5 h-5 mb-1 group-hover:scale-110 transition-transform" />
-      {!compact && <span className="text-[10px] text-center px-1 leading-tight">{label}</span>}
+      disabled={isExtracting}
+      className={`${className} bg-gray-800 hover:bg-gray-700 border border-dashed border-gray-600 rounded-lg flex flex-col items-center justify-center text-gray-400 hover:text-white transition-colors group relative overflow-hidden`}>
+      {isExtracting ? (
+        <div className="flex flex-col items-center">
+          <div className="w-4 h-4 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin mb-1"></div>
+          <span className="text-[9px]">Extracting...</span>
+        </div>
+      ) : (
+        <>
+          <PlusIcon className="w-5 h-5 mb-1 group-hover:scale-110 transition-transform" />
+          {!compact && <span className="text-[10px] text-center px-1 leading-tight">{label}</span>}
+        </>
+      )}
       <input
         type="file"
         ref={inputRef}
         onChange={handleFileChange}
-        accept="image/*"
+        accept={acceptVideo ? "image/*,video/*" : "image/*"}
         className="hidden"
       />
     </button>
@@ -419,6 +484,7 @@ const PromptForm: React.FC<PromptFormProps> = ({
                 setStartFrame(null);
                 setIsLooping(false);
               }}
+              acceptVideo={true} // Allow video to extract start frame
             />
             {!isLooping && (
               <ImageUpload
@@ -430,7 +496,7 @@ const PromptForm: React.FC<PromptFormProps> = ({
             )}
           </div>
           <p className="text-[10px] text-gray-500 italic">
-            Images-to-video requires at least a start frame.
+            Images-to-video requires at least a start frame. You can also upload a video to use its last frame as start.
           </p>
           {startFrame && !endFrame && (
             <div className="mt-1 flex items-center">
@@ -455,7 +521,7 @@ const PromptForm: React.FC<PromptFormProps> = ({
       return (
         <div className="mb-4 p-4 bg-[#1a1a1a] rounded-xl border border-gray-700 flex flex-col gap-3">
             <label className="text-xs font-bold text-gray-400 uppercase tracking-widest block text-center">
-              Character & Style References
+              Character, Style, or Previous Video References
             </label>
             <div className="flex items-center justify-center gap-3">
               {/* Always show 3 slots for clarity */}
@@ -473,16 +539,19 @@ const PromptForm: React.FC<PromptFormProps> = ({
                       />
                     ) : (
                       <ImageUpload
-                        label={`Ref ${i + 1}`}
+                        label={i === 0 ? "Video / Ref 1" : `Ref ${i + 1}`}
                         onSelect={(img) => setReferenceImages((imgs) => [...imgs, img])}
                         className="w-24 h-24"
                         compact={false}
+                        acceptVideo={true} // Allow video upload here to extract frame
                       />
                     )}
                  </div>
               ))}
             </div>
-            <p className="text-[10px] text-gray-500 text-center">Upload up to 3 images to maintain character/style consistency.</p>
+            <p className="text-[10px] text-gray-500 text-center">
+              Upload images or <strong>videos</strong> (auto-extracts last frame) to maintain character consistency.
+            </p>
         </div>
       );
     }

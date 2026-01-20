@@ -78,10 +78,10 @@ export const generateSpeech = async (
   const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
 
   // Map App Speakers to Gemini Voices
-  let voiceName = 'Puck'; // Default Narrator
+  let voiceName = 'Puck'; // Default
   if (speaker === Speaker.ELENA) voiceName = 'Kore';
   if (speaker === Speaker.ARUN) voiceName = 'Fenrir';
-  if (speaker === Speaker.NARRATOR) voiceName = 'Puck'; // or Charon
+  if (speaker === Speaker.NARRATOR) voiceName = 'Charon'; // Deep Male Voice
 
   try {
     const response = await ai.models.generateContent({
@@ -177,7 +177,7 @@ export const generateVideo = async (
         referenceImagesPayload.push({
           image: {
             imageBytes: img.base64,
-            mimeType: img.file.type,
+            mimeType: 'image/jpeg', // Force jpeg for safety if extracted from video, though img.file.type should work if derived correctly
           },
           referenceType: VideoGenerationReferenceType.ASSET,
         });
